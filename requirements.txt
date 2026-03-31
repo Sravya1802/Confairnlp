@@ -1,0 +1,9 @@
+torch>=2.0
+transformers>=4.30
+datasets
+scikit-learn
+pandas
+numpy
+matplotlib
+seaborn
+tqdm
