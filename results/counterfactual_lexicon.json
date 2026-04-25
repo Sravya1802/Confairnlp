@@ -1,0 +1,110 @@
+{
+  "SGT_LEXICON": {
+    "African": [
+      "black",
+      "african",
+      "afro",
+      "blacks",
+      "africans"
+    ],
+    "Caucasian": [
+      "white",
+      "caucasian",
+      "whites",
+      "caucasians"
+    ],
+    "Islam": [
+      "muslim",
+      "islam",
+      "islamic",
+      "muslims"
+    ],
+    "Christian": [
+      "christian",
+      "christians",
+      "christianity"
+    ],
+    "Jewish": [
+      "jewish",
+      "jew",
+      "jews"
+    ],
+    "Hispanic": [
+      "hispanic",
+      "latino",
+      "latina",
+      "mexican",
+      "hispanics"
+    ],
+    "Asian": [
+      "asian",
+      "asians",
+      "chinese",
+      "korean",
+      "japanese"
+    ],
+    "Indian": [
+      "indian",
+      "indians",
+      "desi"
+    ],
+    "Homosexual": [
+      "gay",
+      "homosexual",
+      "lesbian",
+      "queer",
+      "gays"
+    ],
+    "Heterosexual": [
+      "straight",
+      "heterosexual",
+      "straights"
+    ],
+    "Women": [
+      "woman",
+      "women",
+      "female",
+      "females",
+      "girl",
+      "girls"
+    ],
+    "Men": [
+      "man",
+      "men",
+      "male",
+      "males",
+      "boy",
+      "boys"
+    ]
+  },
+  "SWAP_PAIRS": [
+    [
+      "African",
+      "Caucasian"
+    ],
+    [
+      "Islam",
+      "Christian"
+    ],
+    [
+      "Jewish",
+      "Caucasian"
+    ],
+    [
+      "Hispanic",
+      "Caucasian"
+    ],
+    [
+      "Asian",
+      "Caucasian"
+    ],
+    [
+      "Homosexual",
+      "Heterosexual"
+    ],
+    [
+      "Women",
+      "Men"
+    ]
+  ]
+}

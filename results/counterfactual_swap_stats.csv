@@ -1,0 +1,8 @@
+pair,source,target,n_source_tagged,n_with_swap
+African->Caucasian,African,Caucasian,426,75
+Islam->Christian,Islam,Christian,274,111
+Jewish->Caucasian,Jewish,Caucasian,244,109
+Hispanic->Caucasian,Hispanic,Caucasian,74,5
+Asian->Caucasian,Asian,Caucasian,69,33
+Homosexual->Heterosexual,Homosexual,Heterosexual,241,90
+Women->Men,Women,Men,386,108
