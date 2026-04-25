@@ -97,11 +97,20 @@ def _require(path: str, hint: str) -> pd.DataFrame:
 
 
 def make_fig1_attribution() -> None:
-    df = _require(
+    df_full = _require(
         os.path.join(RESULTS_DIR, "attribution_scores.csv"),
         "python evaluation/causal_attribution.py",
     )
-    df = df.sort_values("undercoverage_marginal", ascending=False).reset_index(drop=True)
+    omitted = (
+        df_full[~df_full["reliable"]]
+        .sort_values("n_test", ascending=False)["group"]
+        .tolist()
+    )
+    df = (
+        df_full[df_full["reliable"]]
+        .sort_values("undercoverage_marginal", ascending=False)
+        .reset_index(drop=True)
+    )
     groups = df["group"].tolist()
     D = df["D_g"].to_numpy()
     U = df["U_g"].to_numpy()
@@ -152,10 +161,16 @@ def make_fig1_attribution() -> None:
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
+    omitted_str = ", ".join(omitted) if omitted else "none"
     fig.text(
         0.5, -0.02,
         "Letter above each bar = dominant cause: D = DataScarcity, "
         "U = ModelUncertainty, S = SystemicBias, M = Mixed.",
+        ha="center", fontsize=10, style="italic",
+    )
+    fig.text(
+        0.5, -0.05,
+        f"Groups with $n_{{test}} < 30$ omitted ({omitted_str}) for reliability.",
         ha="center", fontsize=10, style="italic",
     )
 
@@ -235,6 +250,16 @@ def make_fig2_bootstrap_ci() -> None:
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
     ax.set_ylim(0, max(highs) * 1.30)
+
+    fig.text(
+        0.5, -0.04,
+        "Bootstrap CIs (unpaired) overlap, but the paired permutation test "
+        "($p = 0.0005$) confirms Fair-CP's improvement is statistically\n"
+        "significant — pairing controls for resample-level noise that "
+        "dominates unpaired CIs.",
+        ha="center", fontsize=10, style="italic",
+    )
+
     plt.tight_layout()
     _save(fig, "fig2_bootstrap_ci")
 
