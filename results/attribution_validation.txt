@@ -1,0 +1,14 @@
+Causal Coverage Attribution -- validation
+==================================================
+alpha                              = 0.1
+target_coverage                    = 0.9000
+fair_lambda                        = 0.10
+n_groups_total                     = 23
+n_groups_reliable (n_test >= min)  = 13
+n_undercovered_reliable            = 10
+spearman(D_g, undercoverage)       = rho=+0.1030, p=0.777
+spearman(U_g, undercoverage)       = rho=+0.5030, p=0.1383
+spearman(S_g, undercoverage)       = rho=+0.5515, p=0.0984
+
+Mean |coverage - target| reduction by dominant cause (Fair CP vs Marginal):
+  SystemicBias       = +0.0038

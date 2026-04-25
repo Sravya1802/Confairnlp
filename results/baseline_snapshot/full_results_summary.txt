@@ -1,0 +1,32 @@
+ConfairNLP Results Summary
+==================================================
+Primary Model: hatebert_hatexplain
+Dataset: HateXplain
+Alpha: 0.1
+Target Coverage: 0.90
+Primary Disparity Metric: reliable groups with n_test >= 30
+
+Marginal CP:
+  Coverage: 0.9059
+  Avg Set Size: 1.8471
+  Reliable-Group Coverage Disparity: 0.0615
+  All-Group Coverage Disparity: 0.3000
+
+Group-Conditional CP:
+  Coverage: 0.9121
+  Avg Set Size: 1.9527
+  Reliable-Group Coverage Disparity: 0.0459
+  All-Group Coverage Disparity: 0.3000
+
+Fair CP (lambda=0.10, selected on tuning split):
+  Coverage: 0.9017
+  Avg Set Size: 1.8336
+  Reliable-Group Coverage Disparity: 0.0449
+  All-Group Coverage Disparity: 0.3000
+
+Key Finding:
+  Marginal CP reliable disparity: 0.0615
+  Group-Conditional CP reliable disparity: 0.0459
+  Fair CP reliable disparity: 0.0449
+
+Total runtime: 56.6 minutes
