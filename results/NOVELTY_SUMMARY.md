@@ -43,3 +43,24 @@ Each section below uses the 5-move discussion style:
 
 **(5) Honest negative.** This analysis has two important caveats. First, token-level swaps are a *coarse* approximation to a true counterfactual: mapping "jewish" to "white" or "muslim" to "christian" changes denotational meaning in many posts, so a label flip is not unambiguously a fairness violation. Second, our SGT lexicon is small and English-only; genuine out-of-lexicon perturbations (slang, coded references) are not covered, and the Hispanic->Caucasian pair was skipped because too few posts contained lexicon tokens. We report counterfactual flip rates as a diagnostic for shortcut learning, not as a standalone fairness verdict.
 
+
+## Cross-Cutting Conclusions
+
+Three modules taken together yield a coherent story:
+
+1. **Where the gaps come from.** Reliable-group coverage gaps are driven by classifier accuracy variance (S_g), not by calibration scarcity (D_g). Module 1's Spearman test shows D_g is the *weakest* predictor of undercoverage among reliable groups; S_g and U_g are stronger.
+2. **What Fair CP buys.** Fair CP at lambda*=0.10 (selected on the dedicated tuning split, leak-free) significantly reduces reliable-group coverage disparity vs Marginal CP -- paired permutation p = 0.0005 -- but only by ~0.007 in absolute terms. Module 2's bootstrap CIs widen for small reliable groups, so per-group claims must be read through the CI, not the mean. Module 2 also exposes that singleton prediction sets cover only 0.84 (under target) while triple-class sets cover 1.00, demonstrating that the marginal 1-alpha guarantee averages over heterogeneous size sub-populations.
+3. **What Fair CP does not buy.** Module 3's counterfactual stress test shows the three CP methods are indistinguishable in their robustness to SGT token swaps. Coverage-fairness and counterfactual-fairness are separate axes; Fair CP only addresses the former. The 51% set-flip rate on Homosexual->Heterosexual indicates HateBERT is using SGT tokens as shortcuts -- a property of the base model that no post-hoc CP wrapper can repair.
+
+The unifying narrative: **post-hoc conformal prediction is a calibration tool, not a debiasing tool.** When the underlying classifier is the bottleneck (Modules 1 and 3), Fair CP yields small, statistically-significant-but-practically-modest gains; the larger gains require improving the classifier itself.
+
+## Future Work
+
+The following extensions were scoped out of this 3-day project but are natural follow-ups:
+
+- **Intersectional CP.** Some HateXplain posts carry multiple target tags (e.g. Black Women, Muslim Refugees). A joint-conditional or stratified CP that targets per-intersection coverage would test whether intersectional groups suffer compound undercoverage. Sample-size constraints (most intersections have n_test < 50) make this a wide-CI / low-power experiment, which is why we deferred it.
+- **LLM-as-classifier with ConU.** Apply the conformal-uncertainty (ConU) protocol of Cheng et al. (EMNLP 2024) to a frozen instruction-tuned LLM (Llama-3-8B or similar): K-sample at temperature, treat label frequencies as nonconformity scores, and run the same per-group analysis. Useful for cross-model generalization claims. Required HF gated-model approval and dual-T4 inference, which exceeded our 3-day budget.
+- **Multi-seed training variance.** Re-train BERT and HateBERT with seeds 42/43/44 and report mean +/- std of disparity across seeds. Tells us whether the disparity reduction we observe is consistent across initialization noise or a single-seed artifact.
+- **Calibration-set bootstrap with re-tuned lambda.** Our Module 2 bootstrap holds lambda* fixed at the tuning-split-selected value. A stronger experiment would re-run the lambda selection on each bootstrap iteration, capturing tuning-variance in addition to test-variance.
+- **Conformal risk control / RAPS.** Beyond softmax and APS scores, evaluate Regularized APS and Conformal Risk Control to see whether more sophisticated nonconformity scores reduce reliable-group disparity at smaller set-size cost.
+- **Cross-dataset transfer.** ToxiGen and Davidson are pre-processed in this repo but unused in the headline. Calibrate on HateXplain, evaluate per-group disparity on ToxiGen (which has explicit target-group labels) to test whether the disparity story transfers across dataset distributions.
