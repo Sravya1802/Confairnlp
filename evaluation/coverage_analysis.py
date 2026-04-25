@@ -169,7 +169,7 @@ def plot_coverage_bar_chart(
     ax.legend(fontsize=10)
     ax.set_ylim(0.5, 1.05)
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"[Plot] Coverage bar chart saved to {save_path}")
 
@@ -221,7 +221,7 @@ def plot_lambda_tradeoff(
     ax.set_ylabel("Coverage Disparity on Reliable Groups", fontsize=12)
     ax.set_title(f"Fairness-Efficiency Tradeoff (alpha = {alpha})", fontsize=14)
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"[Plot] Lambda tradeoff curve saved to {save_path}")
 
@@ -245,7 +245,7 @@ def plot_multi_alpha_disparity(alpha_results: dict, save_path: str):
     ax.set_title("Coverage Disparity Across Alpha Values", fontsize=14)
     ax.legend(fontsize=10)
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"[Plot] Multi-alpha disparity plot saved to {save_path}")
 
