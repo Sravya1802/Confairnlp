@@ -22,6 +22,14 @@ High set/label flip rates indicate the model is using SGT tokens as shortcuts.
 A method whose coverage is more stable under identity-preserving swaps is
 "causally fairer" in a colloquial sense.
 
+Threshold policy is explicit:
+  - fixed_source: original and counterfactual texts both use the original
+                  source-group thresholds. This isolates text sensitivity.
+  - target_group: original text uses source-group thresholds; counterfactual
+                  text uses target-group thresholds. This approximates a
+                  protected-attribute intervention.
+  - both: writes both policy variants.
+
 Outputs (results/):
   counterfactual_posts.csv         one row per post with original + CF text
                                    and both softmax vectors
@@ -35,10 +43,15 @@ import argparse
 import json
 import os
 import re
+import sys
 
 import numpy as np
 import pandas as pd
 import torch
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from conformal.group_conditional_cp import get_group_indices
 from conformal.marginal_cp import build_prediction_sets_aps, build_prediction_sets_softmax
@@ -74,6 +87,8 @@ SWAP_PAIRS: list[tuple[str, str]] = [
     ("Homosexual", "Heterosexual"),
     ("Women", "Men"),
 ]
+
+THRESHOLD_POLICIES = ("fixed_source", "target_group", "both")
 
 
 def _build_swap_map(source: str, target: str) -> dict[str, str]:
@@ -182,6 +197,18 @@ def _build_sets_for_rows(
     return sets
 
 
+def _counterfactual_groups(sample_groups: list[str], source: str, target: str) -> list[str]:
+    """Replace source group membership with target group membership."""
+    updated = []
+    for group in sample_groups:
+        replacement = target if group == source else group
+        if replacement not in updated:
+            updated.append(replacement)
+    if target not in updated:
+        updated.append(target)
+    return updated or [target]
+
+
 def _contains_source_tokens(text: str, swap_map: dict[str, str]) -> bool:
     if not swap_map:
         return False
@@ -198,8 +225,19 @@ def run(
     score_function: str = "softmax",
     batch_size: int = 16,
     min_swap_count: int = 20,
+    threshold_policy: str = "fixed_source",
     force_recompute: bool = False,
 ) -> dict:
+    if threshold_policy not in THRESHOLD_POLICIES:
+        raise ValueError(
+            f"threshold_policy must be one of {THRESHOLD_POLICIES}, got {threshold_policy!r}"
+        )
+    threshold_policies = (
+        ["fixed_source", "target_group"]
+        if threshold_policy == "both"
+        else [threshold_policy]
+    )
+
     ensure_results_dir()
     setup = load_primary_setup(
         alpha=alpha,
@@ -259,51 +297,65 @@ def run(
         orig_idx_arr = np.array([r["orig_idx"] for r in applied], dtype=int)
         orig_probs_sub = test_probs[orig_idx_arr]
         labels_sub = np.array([r["label"] for r in applied], dtype=int)
-        sample_groups_sub = [test_groups[i] for i in orig_idx_arr]
+        source_groups_sub = [test_groups[i] for i in orig_idx_arr]
+        target_groups_sub = [
+            _counterfactual_groups(groups, source, target)
+            for groups in source_groups_sub
+        ]
 
         orig_argmax = np.argmax(orig_probs_sub, axis=1)
         cf_argmax = np.argmax(cf_probs, axis=1)
         label_flip_rate = float(np.mean(orig_argmax != cf_argmax))
 
-        for method in ["marginal", "gc", "fair"]:
-            orig_sets = _build_sets_for_rows(
-                orig_probs_sub, sample_groups_sub, method, setup, score_function
-            )
-            cf_sets = _build_sets_for_rows(
-                cf_probs, sample_groups_sub, method, setup, score_function
+        for policy in threshold_policies:
+            cf_groups_sub = (
+                source_groups_sub if policy == "fixed_source" else target_groups_sub
             )
 
-            n = len(applied)
-            orig_cov = float(np.mean([labels_sub[i] in orig_sets[i] for i in range(n)]))
-            cf_cov = float(np.mean([labels_sub[i] in cf_sets[i] for i in range(n)]))
-            coverage_stability = abs(orig_cov - cf_cov)
+            for method in ["marginal", "gc", "fair"]:
+                orig_sets = _build_sets_for_rows(
+                    orig_probs_sub, source_groups_sub, method, setup, score_function
+                )
+                cf_sets = _build_sets_for_rows(
+                    cf_probs, cf_groups_sub, method, setup, score_function
+                )
 
-            set_flip = float(np.mean([
-                set(orig_sets[i]) != set(cf_sets[i]) for i in range(n)
-            ]))
-            orig_sizes = np.array([len(s) for s in orig_sets])
-            cf_sizes = np.array([len(s) for s in cf_sets])
-            mean_size_delta = float(np.mean(cf_sizes - orig_sizes))
+                n = len(applied)
+                orig_cov = float(np.mean([labels_sub[i] in orig_sets[i] for i in range(n)]))
+                cf_cov = float(np.mean([labels_sub[i] in cf_sets[i] for i in range(n)]))
+                coverage_stability = abs(orig_cov - cf_cov)
 
-            stability_rows.append({
-                "source": source,
-                "target": target,
-                "method": method,
-                "n_posts": int(n),
-                "orig_coverage": orig_cov,
-                "cf_coverage": cf_cov,
-                "coverage_stability": coverage_stability,
-                "set_flip_rate": set_flip,
-                "mean_set_size_delta": mean_size_delta,
-                "label_flip_rate": label_flip_rate,
-            })
+                set_flip = float(np.mean([
+                    set(orig_sets[i]) != set(cf_sets[i]) for i in range(n)
+                ]))
+                orig_sizes = np.array([len(s) for s in orig_sets])
+                cf_sizes = np.array([len(s) for s in cf_sets])
+                mean_size_delta = float(np.mean(cf_sizes - orig_sizes))
+
+                stability_rows.append({
+                    "source": source,
+                    "target": target,
+                    "threshold_policy": policy,
+                    "method": method,
+                    "n_posts": int(n),
+                    "orig_coverage": orig_cov,
+                    "cf_coverage": cf_cov,
+                    "coverage_stability": coverage_stability,
+                    "set_flip_rate": set_flip,
+                    "mean_set_size_delta": mean_size_delta,
+                    "label_flip_rate": label_flip_rate,
+                })
 
         for r, p_orig, p_cf in zip(applied, orig_probs_sub, cf_probs):
+            row_source_groups = test_groups[r["orig_idx"]]
+            row_target_groups = _counterfactual_groups(row_source_groups, source, target)
             post_rows.append({
                 "source": source,
                 "target": target,
                 "orig_idx": r["orig_idx"],
                 "label": r["label"],
+                "source_groups": json.dumps(row_source_groups),
+                "target_groups": json.dumps(row_target_groups),
                 "text": r["text"],
                 "cf_text": r["cf_text"],
                 "n_swaps": r["n_swaps"],
@@ -323,13 +375,18 @@ def run(
     stability_df.to_csv(stability_path, index=False)
     print(f"[counterfactual] Wrote {stability_path}")
 
-    comparison = stability_df.pivot_table(
-        index=["source", "target"],
-        columns="method",
-        values=["coverage_stability", "set_flip_rate", "mean_set_size_delta"],
-    )
-    comparison.columns = [f"{a}_{b}" for a, b in comparison.columns]
-    comparison = comparison.reset_index()
+    if stability_df.empty:
+        comparison = pd.DataFrame(
+            columns=["source", "target", "threshold_policy"]
+        )
+    else:
+        comparison = stability_df.pivot_table(
+            index=["source", "target", "threshold_policy"],
+            columns="method",
+            values=["coverage_stability", "set_flip_rate", "mean_set_size_delta"],
+        )
+        comparison.columns = [f"{a}_{b}" for a, b in comparison.columns]
+        comparison = comparison.reset_index()
     comparison_path = os.path.join(RESULTS_DIR, "counterfactual_comparison.csv")
     comparison.to_csv(comparison_path, index=False)
     print(f"[counterfactual] Wrote {comparison_path}")
@@ -337,7 +394,12 @@ def run(
     swap_stats_path = os.path.join(RESULTS_DIR, "counterfactual_swap_stats.csv")
     swap_stats_df.to_csv(swap_stats_path, index=False)
 
-    section = _five_move_paragraph(stability_df, swap_stats_df, setup["fair_lambda"])
+    section = _five_move_paragraph(
+        stability_df,
+        swap_stats_df,
+        setup["fair_lambda"],
+        threshold_policy,
+    )
     summary_path = append_novelty_summary(section)
     print(f"[counterfactual] Appended 5-move paragraph to {summary_path}")
 
@@ -357,6 +419,7 @@ def _five_move_paragraph(
     stability_df: pd.DataFrame,
     swap_stats_df: pd.DataFrame,
     lam_star: float,
+    threshold_policy: str,
 ) -> str:
     lines = ["## Module 3 -- Counterfactual SGT-Swap Stress Test", ""]
 
@@ -365,11 +428,18 @@ def _five_move_paragraph(
         lines.append("")
         return "\n".join(lines)
 
+    narrative_policy = (
+        "fixed_source"
+        if threshold_policy == "both" and "fixed_source" in set(stability_df["threshold_policy"])
+        else threshold_policy
+    )
+    narrative_df = stability_df[stability_df["threshold_policy"] == narrative_policy].copy()
+
     pairs = stability_df[["source", "target"]].drop_duplicates()
     pair_strs = [f"{r['source']}->{r['target']}" for _, r in pairs.iterrows()]
-    total_posts = int(stability_df.groupby(["source", "target"])["n_posts"].first().sum())
+    total_posts = int(narrative_df.groupby(["source", "target"])["n_posts"].first().sum())
 
-    marg_only = stability_df[stability_df["method"] == "marginal"].copy()
+    marg_only = narrative_df[narrative_df["method"] == "marginal"].copy()
     worst_label_flip = marg_only.sort_values("label_flip_rate", ascending=False).head(3)
     worst_set_flip = marg_only.sort_values("set_flip_rate", ascending=False).head(1).iloc[0]
     worst_cov_stab = marg_only.sort_values("coverage_stability", ascending=False).head(1).iloc[0]
@@ -378,7 +448,8 @@ def _five_move_paragraph(
         f"**(1) Decomposition.** We constructed identity-preserving token swaps for "
         f"{len(pair_strs)} demographic pairs ({', '.join(pair_strs)}) covering {total_posts} "
         f"test posts that (a) were tagged with the source group and (b) contained at least "
-        f"one source-group lexicon token. The highest argmax label-flip rates "
+        f"one source-group lexicon token. The narrative below uses threshold_policy="
+        f"`{narrative_policy}`. The highest argmax label-flip rates "
         f"(method-agnostic) are: " +
         ", ".join(
             f"**{r['source']}->{r['target']}** ({r['label_flip_rate']:.1%})"
@@ -392,7 +463,7 @@ def _five_move_paragraph(
     )
     lines.append("")
 
-    mean_by_method = stability_df.groupby("method")[
+    mean_by_method = narrative_df.groupby("method")[
         ["coverage_stability", "set_flip_rate", "mean_set_size_delta"]
     ].mean().round(4)
     rows = [
@@ -411,6 +482,12 @@ def _five_move_paragraph(
         "signature of shortcut learning -- the model treats SGT tokens as a confidence "
         "modifier rather than ignoring them."
     )
+    if threshold_policy == "both":
+        lines.append(
+            " The CSV outputs also include `target_group` rows, where the counterfactual "
+            "text is scored with the target group's conformal threshold; use those rows "
+            "when presenting the stricter protected-attribute-intervention interpretation."
+        )
     lines.append("")
     lines.append(
         "**(3) Theoretical tie-back.** Counterfactual invariance is a causal-fairness "
@@ -456,6 +533,16 @@ def _parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--min-swap-count", type=int, default=20,
                         help="Skip a swap pair if fewer than this many posts actually get swapped")
+    parser.add_argument(
+        "--threshold-policy",
+        type=str,
+        default="fixed_source",
+        choices=THRESHOLD_POLICIES,
+        help=(
+            "fixed_source isolates text sensitivity; target_group scores the "
+            "counterfactual text with target-group thresholds; both writes both variants"
+        ),
+    )
     parser.add_argument("--force-recompute", action="store_true")
     return parser.parse_args()
 
@@ -468,5 +555,6 @@ if __name__ == "__main__":
         score_function=args.score_function,
         batch_size=args.batch_size,
         min_swap_count=args.min_swap_count,
+        threshold_policy=args.threshold_policy,
         force_recompute=args.force_recompute,
     )

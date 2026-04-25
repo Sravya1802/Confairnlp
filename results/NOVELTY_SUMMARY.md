@@ -1,4 +1,4 @@
-# ConfairNLP — Novelty Results Summary
+# ConfairNLP -- Novelty Results Summary
 
 Each section below uses the 5-move discussion style:
 (1) decomposition, (2) attribution, (3) theoretical tie-back, (4) trade-off surfacing, (5) honest negative.
@@ -34,6 +34,8 @@ Each section below uses the 5-move discussion style:
 ## Module 3 -- Counterfactual SGT-Swap Stress Test
 
 **(1) Decomposition.** We constructed identity-preserving token swaps for 6 demographic pairs (African->Caucasian, Islam->Christian, Jewish->Caucasian, Asian->Caucasian, Homosexual->Heterosexual, Women->Men) covering 526 test posts that (a) were tagged with the source group and (b) contained at least one source-group lexicon token. The highest argmax label-flip rates (method-agnostic) are: **Jewish->Caucasian** (21.1%), **Islam->Christian** (19.8%), **Homosexual->Heterosexual** (18.9%). The single most extreme outlier is **Homosexual->Heterosexual**: 51% of marginal-CP prediction sets change after the swap, and per-group coverage drops by 15.6% -- a fairness violation an order of magnitude larger than the next-worst pair.
+
+These generated counterfactual numbers use the `fixed_source` threshold policy: original and swapped texts are both scored with the original source-group thresholds, isolating text sensitivity. Rerun `evaluation/counterfactual.py --threshold-policy both` to additionally write target-group-threshold intervention rows.
 
 **(2) Attribution.** Averaged across swap pairs, the three CP methods are *essentially indistinguishable* on counterfactual stability -- marginal: |dcov|=0.043, set-flip=0.291, dsize=-0.115; gc: |dcov|=0.041, set-flip=0.299, dsize=-0.115; fair: |dcov|=0.049, set-flip=0.281, dsize=-0.105 -- which means the source of instability is the underlying classifier, not the conformal layer. The mean set-size delta is consistently *negative*: counterfactual sets are smaller than original sets. The classifier is more confident on the target-group rephrasing of the same post, which is itself a signature of shortcut learning -- the model treats SGT tokens as a confidence modifier rather than ignoring them.
 

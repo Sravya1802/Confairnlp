@@ -14,24 +14,64 @@ from __future__ import annotations
 
 import os
 import pickle
+import sys
 from typing import Any
 
 import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from conformal.fair_cp import result_for_lambda, run_fair_cp_sweep, select_lambda_by_tuning
 from conformal.group_conditional_cp import run_group_conditional_cp
 from conformal.marginal_cp import run_marginal_cp
 from models.train_classifier import get_softmax_probs, load_hatexplain_splits
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models", "trained")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 PRIMARY_MODEL = "hatebert_hatexplain"
 DEFAULT_CACHE = os.path.join(RESULTS_DIR, "_novelty_cache.pkl")
 SEED = 42
+
+
+def _path_signature(path: str) -> dict:
+    """Return a lightweight cache invalidation signature."""
+    if not os.path.exists(path):
+        return {"exists": False, "path": path}
+    if os.path.isfile(path):
+        stat = os.stat(path)
+        return {
+            "exists": True,
+            "path": path,
+            "kind": "file",
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+    files = []
+    for root, _, filenames in os.walk(path):
+        for filename in sorted(filenames):
+            full_path = os.path.join(root, filename)
+            stat = os.stat(full_path)
+            files.append(
+                {
+                    "relpath": os.path.relpath(full_path, path),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+            )
+    return {"exists": True, "path": path, "kind": "directory", "files": files}
+
+
+def _cache_signature(data_dir: str, model_dir: str, model_name: str) -> dict:
+    return {
+        "splits": _path_signature(os.path.join(data_dir, "hatexplain_splits.pkl")),
+        "model": _path_signature(os.path.join(model_dir, model_name)),
+    }
 
 
 def prepare_groups(df) -> list:
@@ -70,6 +110,7 @@ def load_primary_setup(
     """Return a dict of splits, probabilities, and CP results for novelty modules."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    signature = _cache_signature(data_dir, model_dir, model_name)
 
     if os.path.exists(cache_path) and not force_recompute:
         with open(cache_path, "rb") as f:
@@ -79,12 +120,13 @@ def load_primary_setup(
             and cached.get("model_name") == model_name
             and cached.get("score_function") == score_function
             and cached.get("min_test_group_size") == min_test_group_size
+            and cached.get("cache_signature") == signature
         )
         if matches:
             print(f"[novelty setup] Using cached artifacts from {cache_path}")
             cached["device"] = device
             return cached
-        print(f"[novelty setup] Cache exists but config differs; recomputing.")
+        print("[novelty setup] Cache exists but config, data, or model differs; recomputing.")
 
     splits = load_hatexplain_splits(data_dir)
     cal_df = splits["calibration"]
@@ -165,6 +207,7 @@ def load_primary_setup(
         "fair": fair,
         "fair_lambda": selected["lambda"],
         "fair_test_sweep": test_sweep,
+        "cache_signature": signature,
     }
 
     with open(cache_path, "wb") as f:
@@ -199,7 +242,7 @@ def append_novelty_summary(section_markdown: str, summary_path: str | None = Non
     ensure_results_dir()
     path = summary_path or os.path.join(RESULTS_DIR, "NOVELTY_SUMMARY.md")
     header = (
-        "# ConfairNLP — Novelty Results Summary\n\n"
+        "# ConfairNLP -- Novelty Results Summary\n\n"
         "Each section below uses the 5-move discussion style:\n"
         "(1) decomposition, (2) attribution, (3) theoretical tie-back, "
         "(4) trade-off surfacing, (5) honest negative.\n\n"

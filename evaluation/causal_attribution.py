@@ -1,5 +1,5 @@
 """
-Novelty Module 1 — Causal Coverage Attribution.
+Novelty Module 1 -- Causal Coverage Attribution.
 
 For each demographic group, we compute three diagnostic scores that attribute
 per-group coverage gap to distinct failure modes:
@@ -32,10 +32,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from conformal.group_conditional_cp import get_group_indices
 from evaluation._novelty_setup import (

@@ -30,9 +30,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from conformal.fair_cp import compute_fair_thresholds
 from conformal.group_conditional_cp import (
@@ -468,11 +473,12 @@ def run(
     print(f"[set_size_fairness] Wrote {strat_path}")
 
     bs_df = run_bootstrap(setup, n_bootstrap=n_bootstrap)
+    reliable_groups = set(size_df.loc[size_df["reliable"], "group"])
     point_values = {
-        "marginal": setup["group_conditional"]["coverage_disparity"] if False else _reliable_group_disparity(
-            _per_group_coverage(marginal_sets, test_labels, test_groups, set(size_df[size_df["reliable"]]["group"])),
+        "marginal": _reliable_group_disparity(
+            _per_group_coverage(marginal_sets, test_labels, test_groups, reliable_groups),
             alpha,
-            set(size_df[size_df["reliable"]]["group"]),
+            reliable_groups,
         ),
         "gc": setup["group_conditional"]["coverage_disparity_reliable"],
         "fair": setup["fair"]["coverage_disparity_reliable"],
