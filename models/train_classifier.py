@@ -1,18 +1,20 @@
 """
-train_classifier.py — Fine-tune BERT and HateBERT on HateXplain for hate speech classification.
+Fine-tune BERT and HateBERT on HateXplain for hate speech classification.
 
-Uses HuggingFace Trainer API with the following config:
-  - Epochs: 5, LR: 2e-5, Batch size: 16, Max length: 128
-  - Optimizer: AdamW, Loss: CrossEntropyLoss (built into Trainer)
-  - Evaluates per-class precision/recall/F1 and macro F1 on test set
+Default config:
+- Epochs: 5
+- Learning rate: 2e-5
+- Batch size: 16
+- Max sequence length: 128
 """
 
+import inspect
 import os
 import pickle
 
 import numpy as np
 import torch
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, f1_score
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -23,11 +25,21 @@ from transformers import (
 SEED = 42
 NUM_LABELS = 3
 MAX_LENGTH = 128
+DEFAULT_EPOCHS = 5
+DEFAULT_BATCH_SIZE = 16
+DEFAULT_LEARNING_RATE = 2e-5
 LABEL_NAMES = ["hate", "offensive", "normal"]
 
 
+def set_seed(seed: int = SEED) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 class HateDataset(torch.utils.data.Dataset):
-    """Simple dataset wrapper for tokenized hate speech data."""
+    """Dataset wrapper for tokenized hate speech data."""
 
     def __init__(self, encodings, labels):
         self.encodings = encodings
@@ -43,11 +55,10 @@ class HateDataset(torch.utils.data.Dataset):
 
 
 def load_hatexplain_splits(data_dir: str) -> dict:
-    """Load the preprocessed HateXplain splits from pickle."""
+    """Load preprocessed HateXplain splits from pickle."""
     path = os.path.join(data_dir, "hatexplain_splits.pkl")
     with open(path, "rb") as f:
-        splits = pickle.load(f)
-    return splits
+        return pickle.load(f)
 
 
 def tokenize_data(tokenizer, texts, max_length=MAX_LENGTH):
@@ -62,104 +73,122 @@ def tokenize_data(tokenizer, texts, max_length=MAX_LENGTH):
 
 
 def compute_metrics(eval_pred):
-    """Compute accuracy for HuggingFace Trainer evaluation."""
+    """Compute accuracy and macro F1 for HuggingFace Trainer evaluation."""
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
-    accuracy = (predictions == labels).mean()
-    return {"accuracy": accuracy}
+    return {
+        "accuracy": float((predictions == labels).mean()),
+        "macro_f1": float(f1_score(labels, predictions, average="macro")),
+    }
+
+
+def _training_args_kwargs(
+    model_output_dir: str,
+    device: str,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+) -> dict:
+    kwargs = {
+        "output_dir": os.path.join(model_output_dir, "checkpoints"),
+        "num_train_epochs": epochs,
+        "per_device_train_batch_size": batch_size,
+        "per_device_eval_batch_size": max(64, batch_size),
+        "learning_rate": learning_rate,
+        "weight_decay": 0.01,
+        "save_strategy": "no",
+        "seed": SEED,
+        "logging_steps": 100,
+        "report_to": "none",
+    }
+
+    signature = inspect.signature(TrainingArguments.__init__).parameters
+    if "eval_strategy" in signature:
+        kwargs["eval_strategy"] = "no"
+    elif "evaluation_strategy" in signature:
+        kwargs["evaluation_strategy"] = "no"
+
+    if "use_cpu" in signature:
+        kwargs["use_cpu"] = device == "cpu"
+    elif "no_cuda" in signature:
+        kwargs["no_cuda"] = device == "cpu"
+
+    return kwargs
 
 
 def train_model(
     model_name: str,
     save_name: str,
     train_df,
-    test_df,
+    eval_df,
     output_dir: str,
     device: str = "cpu",
-    epochs: int = 1,
-    batch_size: int = 32,
-    learning_rate: float = 2e-5,
+    epochs: int = DEFAULT_EPOCHS,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    learning_rate: float = DEFAULT_LEARNING_RATE,
 ):
-    """Fine-tune a single model on HateXplain training data.
+    """Fine-tune a single model on HateXplain training data."""
+    set_seed(SEED)
 
-    Args:
-        model_name: HuggingFace model identifier (e.g., 'bert-base-uncased')
-        save_name: Name for saving the fine-tuned model
-        train_df: Training dataframe with 'text' and 'label' columns
-        test_df: Test dataframe for evaluation
-        output_dir: Directory to save the fine-tuned model
-        device: 'cuda' or 'cpu'
-        epochs: Number of training epochs
-        batch_size: Training batch size
-        learning_rate: Learning rate for AdamW
-
-    Returns:
-        Tuple of (model, tokenizer)
-    """
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Training {save_name} ({model_name})")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
+    print(
+        f"Config: epochs={epochs}, batch_size={batch_size}, "
+        f"learning_rate={learning_rate}, device={device}"
+    )
 
-    # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, num_labels=NUM_LABELS
+        model_name,
+        num_labels=NUM_LABELS,
     )
 
-    # Tokenize
     train_texts = train_df["text"].tolist()
     train_labels = train_df["label"].tolist()
-    test_texts = test_df["text"].tolist()
-    test_labels = test_df["label"].tolist()
+    eval_texts = eval_df["text"].tolist()
+    eval_labels = eval_df["label"].tolist()
 
-    print(f"Tokenizing {len(train_texts)} train and {len(test_texts)} test samples...")
-    train_encodings = tokenize_data(tokenizer, train_texts)
-    test_encodings = tokenize_data(tokenizer, test_texts)
+    print(f"Tokenizing {len(train_texts)} train and {len(eval_texts)} eval samples...")
+    train_dataset = HateDataset(tokenize_data(tokenizer, train_texts), train_labels)
+    eval_dataset = HateDataset(tokenize_data(tokenizer, eval_texts), eval_labels)
 
-    train_dataset = HateDataset(train_encodings, train_labels)
-    test_dataset = HateDataset(test_encodings, test_labels)
-
-    # Training arguments
     model_output_dir = os.path.join(output_dir, save_name)
     training_args = TrainingArguments(
-        output_dir=os.path.join(model_output_dir, "checkpoints"),
-        num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=64,
-        learning_rate=learning_rate,
-        weight_decay=0.01,
-        eval_strategy="no",
-        save_strategy="no",
-        seed=SEED,
-        logging_steps=100,
-        report_to="none",
-        use_cpu=(device == "cpu"),
+        **_training_args_kwargs(
+            model_output_dir,
+            device=device,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
     )
 
-    # Train
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=test_dataset,
+        eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
     )
 
     print("Starting training...")
     trainer.train()
 
-    # Evaluate on test set
-    print("\nEvaluating on test set...")
-    predictions = trainer.predict(test_dataset)
+    print("\nEvaluating classifier on tuning split...")
+    predictions = trainer.predict(eval_dataset)
     preds = np.argmax(predictions.predictions, axis=-1)
 
     report = classification_report(
-        test_labels, preds, target_names=LABEL_NAMES, digits=4
+        eval_labels,
+        preds,
+        target_names=LABEL_NAMES,
+        digits=4,
+        zero_division=0,
     )
-    print(f"\nClassification Report for {save_name}:")
+    print(f"\nClassification report for {save_name}:")
     print(report)
 
-    # Save model and tokenizer
     model.save_pretrained(model_output_dir)
     tokenizer.save_pretrained(model_output_dir)
     print(f"Model saved to {model_output_dir}")
@@ -172,30 +201,23 @@ def train_all(
     output_dir: str,
     device: str = None,
     skip_if_exists: bool = True,
+    require_existing: bool = False,
+    epochs: int = DEFAULT_EPOCHS,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    learning_rate: float = DEFAULT_LEARNING_RATE,
 ):
-    """Train both BERT and HateBERT classifiers.
-
-    Args:
-        data_dir: Directory containing hatexplain_splits.pkl
-        output_dir: Directory to save trained models
-        device: 'cuda' or 'cpu' (auto-detects if None)
-        skip_if_exists: Skip training if model directory already exists
-
-    Returns:
-        Dictionary mapping model names to (model, tokenizer) tuples.
-    """
+    """Train or load BERT and HateBERT classifiers."""
+    set_seed(SEED)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load data
     splits = load_hatexplain_splits(data_dir)
     train_df = splits["train"]
-    test_df = splits["test"]
+    eval_df = splits.get("tuning", splits["test"])
 
-    # On CPU, subsample training data for tractability
     if device == "cpu" and len(train_df) > 3000:
         print(f"[CPU mode] Subsampling training data from {len(train_df)} to 3000 samples")
         train_df = train_df.sample(n=3000, random_state=SEED, replace=False)
@@ -206,6 +228,7 @@ def train_all(
     ]
 
     trained_models = {}
+    missing_models = []
     for model_name, save_name in models_config:
         model_path = os.path.join(output_dir, save_name)
 
@@ -217,32 +240,36 @@ def train_all(
             trained_models[save_name] = (model, tokenizer)
             continue
 
+        if require_existing:
+            missing_models.append(model_path)
+            continue
+
         model, tokenizer = train_model(
             model_name=model_name,
             save_name=save_name,
             train_df=train_df,
-            test_df=test_df,
+            eval_df=eval_df,
             output_dir=output_dir,
             device=device,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
         )
         trained_models[save_name] = (model, tokenizer)
+
+    if missing_models:
+        missing = "\n  ".join(missing_models)
+        raise FileNotFoundError(
+            "--skip-training was set, but these saved model directories are missing:\n"
+            f"  {missing}\n"
+            "Run without --skip-training to train them, or set --model-dir correctly."
+        )
 
     return trained_models
 
 
 def get_softmax_probs(model, tokenizer, texts, device="cpu", batch_size=32):
-    """Get softmax probabilities for a list of texts.
-
-    Args:
-        model: Fine-tuned classification model
-        tokenizer: Corresponding tokenizer
-        texts: List of input texts
-        device: Device to run inference on
-        batch_size: Batch size for inference
-
-    Returns:
-        numpy array of shape (n_samples, n_classes) with softmax probabilities
-    """
+    """Get softmax probabilities for a list of texts."""
     model.eval()
     model.to(device)
     all_probs = []
@@ -256,7 +283,7 @@ def get_softmax_probs(model, tokenizer, texts, device="cpu", batch_size=32):
             max_length=MAX_LENGTH,
             return_tensors="pt",
         )
-        encodings = {k: v.to(device) for k, v in encodings.items()}
+        encodings = {key: val.to(device) for key, val in encodings.items()}
 
         with torch.no_grad():
             outputs = model(**encodings)
@@ -273,6 +300,16 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", default="data", help="Path to data directory")
     parser.add_argument("--output-dir", default="models/trained", help="Path to save models")
     parser.add_argument("--device", default=None, help="Device (cuda/cpu)")
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
     args = parser.parse_args()
 
-    train_all(args.data_dir, args.output_dir, args.device)
+    train_all(
+        data_dir=args.data_dir,
+        output_dir=args.output_dir,
+        device=args.device,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+    )

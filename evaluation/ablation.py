@@ -1,26 +1,23 @@
 """
-ablation.py — Ablation studies across models, scores, alphas, and datasets.
+Ablation studies across models, score functions, and alpha values.
 
-Compares:
-  - BERT vs HateBERT as base classifiers
-  - Softmax score vs APS score
-  - Alpha values: 0.05, 0.10, 0.15, 0.20
-  - Datasets: HateXplain, ToxiGen
-
-Outputs a summary table (CSV) with coverage disparity and avg set size
-for each configuration.
+Every Fair CP configuration selects lambda on the tuning split and reports
+metrics on the final test split.
 """
 
 import os
-import pickle
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from conformal.fair_cp import result_for_lambda, run_fair_cp_sweep, select_lambda_by_tuning
+from conformal.group_conditional_cp import (
+    MIN_RELIABLE_TEST_GROUP_SIZE,
+    compute_coverage_disparity,
+    run_group_conditional_cp,
+)
 from conformal.marginal_cp import run_marginal_cp
-from conformal.group_conditional_cp import run_group_conditional_cp
-from conformal.fair_cp import run_fair_cp_sweep
 from evaluation.coverage_analysis import compute_per_group_marginal_coverage
 
 SEED = 42
@@ -34,6 +31,9 @@ def run_single_ablation(
     cal_probs: np.ndarray,
     cal_labels: np.ndarray,
     cal_groups: list,
+    tuning_probs: np.ndarray,
+    tuning_labels: np.ndarray,
+    tuning_groups: list,
     test_probs: np.ndarray,
     test_labels: np.ndarray,
     test_groups: list,
@@ -41,42 +41,72 @@ def run_single_ablation(
     score_function: str,
     model_name: str,
     dataset_name: str,
+    lambda_steps: int = 11,
+    min_test_group_size: int = MIN_RELIABLE_TEST_GROUP_SIZE,
 ) -> dict:
-    """Run a single ablation configuration.
-
-    Returns a dict with the configuration and key metrics.
-    """
-    # Marginal CP
+    """Run one ablation configuration."""
     marginal = run_marginal_cp(
-        cal_probs, cal_labels, test_probs, test_labels,
-        alpha=alpha, score_function=score_function,
+        cal_probs,
+        cal_labels,
+        test_probs,
+        test_labels,
+        alpha=alpha,
+        score_function=score_function,
     )
 
-    # Compute per-group marginal coverage for disparity
     marginal_per_group = compute_per_group_marginal_coverage(
-        marginal["prediction_sets"], test_labels, test_groups,
+        marginal["prediction_sets"],
+        test_labels,
+        test_groups,
+        min_test_group_size=min_test_group_size,
     )
-    marginal_disparity = 0.0
-    if marginal_per_group:
-        marginal_disparity = max(
-            abs(v["coverage"] - (1 - alpha))
-            for v in marginal_per_group.values()
-        )
+    marginal_disparity = compute_coverage_disparity(
+        marginal_per_group,
+        alpha,
+        min_test_group_size=min_test_group_size,
+    )
 
-    # Group-conditional CP
     gc = run_group_conditional_cp(
-        cal_probs, cal_labels, cal_groups,
-        test_probs, test_labels, test_groups,
-        alpha=alpha, score_function=score_function,
+        cal_probs,
+        cal_labels,
+        cal_groups,
+        test_probs,
+        test_labels,
+        test_groups,
+        alpha=alpha,
+        score_function=score_function,
+        min_test_group_size=min_test_group_size,
     )
 
-    # Fair CP sweep
-    fair_results = run_fair_cp_sweep(
-        cal_probs, cal_labels, cal_groups,
-        test_probs, test_labels, test_groups,
-        alpha=alpha, score_function=score_function,
+    fair_tuning = run_fair_cp_sweep(
+        cal_probs,
+        cal_labels,
+        cal_groups,
+        tuning_probs,
+        tuning_labels,
+        tuning_groups,
+        alpha=alpha,
+        score_function=score_function,
+        lambda_steps=lambda_steps,
+        min_test_group_size=min_test_group_size,
+        verbose=False,
     )
-    best_fair = min(fair_results, key=lambda r: r["coverage_disparity"])
+    selected_tuning = select_lambda_by_tuning(fair_tuning, alpha)
+
+    fair_test = run_fair_cp_sweep(
+        cal_probs,
+        cal_labels,
+        cal_groups,
+        test_probs,
+        test_labels,
+        test_groups,
+        alpha=alpha,
+        score_function=score_function,
+        lambda_steps=lambda_steps,
+        min_test_group_size=min_test_group_size,
+        verbose=False,
+    )
+    selected_fair = result_for_lambda(fair_test, selected_tuning["lambda"])
 
     return {
         "model": model_name,
@@ -89,35 +119,21 @@ def run_single_ablation(
         "gc_coverage": gc["overall_coverage"],
         "gc_avg_set_size": gc["overall_avg_set_size"],
         "gc_disparity": gc["coverage_disparity"],
-        "fair_coverage": best_fair["overall_coverage"],
-        "fair_avg_set_size": best_fair["overall_avg_set_size"],
-        "fair_disparity": best_fair["coverage_disparity"],
-        "best_lambda": best_fair["lambda"],
+        "gc_disparity_all": gc["coverage_disparity_all"],
+        "fair_coverage": selected_fair["overall_coverage"],
+        "fair_avg_set_size": selected_fair["overall_avg_set_size"],
+        "fair_disparity": selected_fair["coverage_disparity"],
+        "fair_disparity_all": selected_fair["coverage_disparity_all"],
+        "selected_lambda": selected_fair["lambda"],
     }
 
 
 def run_ablation_study(
     model_probs: dict,
-    hatexplain_splits: dict,
-    toxigen_data: dict = None,
     output_dir: str = "results",
 ) -> pd.DataFrame:
-    """Run full ablation study across all configurations.
-
-    Args:
-        model_probs: Dict mapping (model_name, dataset) -> {
-            'cal_probs', 'cal_labels', 'cal_groups',
-            'test_probs', 'test_labels', 'test_groups'
-        }
-        hatexplain_splits: HateXplain data splits
-        toxigen_data: Optional ToxiGen data for cross-dataset ablation
-        output_dir: Directory to save results
-
-    Returns:
-        DataFrame with ablation results
-    """
+    """Run ablations over supplied model probability dictionaries."""
     os.makedirs(output_dir, exist_ok=True)
-    all_results = []
 
     configs = []
     for (model_name, dataset_name), data in model_probs.items():
@@ -126,11 +142,15 @@ def run_ablation_study(
                 configs.append((model_name, dataset_name, alpha, score_fn, data))
 
     print(f"\n[Ablation] Running {len(configs)} configurations...")
+    all_results = []
     for model_name, dataset_name, alpha, score_fn, data in tqdm(configs, desc="Ablation"):
         result = run_single_ablation(
             cal_probs=data["cal_probs"],
             cal_labels=data["cal_labels"],
             cal_groups=data["cal_groups"],
+            tuning_probs=data["tuning_probs"],
+            tuning_labels=data["tuning_labels"],
+            tuning_groups=data["tuning_groups"],
             test_probs=data["test_probs"],
             test_labels=data["test_labels"],
             test_groups=data["test_groups"],
@@ -138,12 +158,16 @@ def run_ablation_study(
             score_function=score_fn,
             model_name=model_name,
             dataset_name=dataset_name,
+            lambda_steps=data.get("lambda_steps", 11),
+            min_test_group_size=data.get(
+                "min_test_group_size",
+                MIN_RELIABLE_TEST_GROUP_SIZE,
+            ),
         )
         all_results.append(result)
 
     df = pd.DataFrame(all_results)
 
-    # Save
     csv_path = os.path.join(output_dir, "ablation_summary.csv")
     df.to_csv(csv_path, index=False, float_format="%.4f")
     print(f"\n[Ablation] Results saved to {csv_path}")

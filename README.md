@@ -1,94 +1,140 @@
 # ConfairNLP: Conformal Prediction for Equitable Hate Speech Detection
 
-CS 517: Socially Responsible AI — Course Project, UIC
+CS 517: Socially Responsible AI - Course Project, UIC
 
 ## Overview
 
-ConfairNLP investigates whether conformal prediction coverage guarantees hold equally across demographic groups in hate speech detection. We fine-tune BERT and HateBERT classifiers, apply split conformal prediction, measure per-group coverage disparities, and propose fairness-regularized fixes.
+ConfairNLP studies whether conformal prediction coverage is distributed evenly
+across demographic target groups in hate speech detection. The default pipeline
+fine-tunes BERT and HateBERT on HateXplain, calibrates conformal prediction
+sets, and compares:
+
+- Marginal split conformal prediction
+- Group-conditional conformal prediction
+- Fairness-regularized conformal prediction with lambda interpolation
+
+The final test split is reserved for reporting. Fair CP lambda selection is
+performed on a separate tuning split to avoid test-set tuning.
 
 ## Project Structure
 
-```
+```text
 confairnlp/
-├── requirements.txt          # Python dependencies
-├── README.md                 # This file
-├── run_all.py                # Single script to run the full pipeline
-├── data/
-│   └── download_data.py      # Downloads and preprocesses HateXplain, ToxiGen, Davidson
-├── models/
-│   └── train_classifier.py   # Fine-tunes BERT and HateBERT on HateXplain
-├── conformal/
-│   ├── marginal_cp.py        # Standard split conformal prediction (+ APS)
-│   ├── group_conditional_cp.py  # Per-group conformal thresholds
-│   └── fair_cp.py            # Fairness-regularized CP with lambda interpolation
-├── evaluation/
-│   ├── coverage_analysis.py  # Per-group coverage metrics, tables, and plots
-│   └── ablation.py           # Ablation over alphas, scores, models
-└── results/                  # Generated plots and tables (after running)
+|-- requirements.txt
+|-- README.md
+|-- run_all.py
+|-- data/
+|   |-- download_data.py
+|-- models/
+|   |-- train_classifier.py
+|-- conformal/
+|   |-- marginal_cp.py
+|   |-- group_conditional_cp.py
+|   |-- fair_cp.py
+|-- evaluation/
+|   |-- coverage_analysis.py
+|   |-- ablation.py
+|-- results/
 ```
 
 ## Quick Start
 
-### 1. Install dependencies
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Run the full pipeline
+Run the full pipeline:
 
 ```bash
 python run_all.py
 ```
 
-### Command-line options
+Useful options:
 
 ```bash
 python run_all.py --help
-
-# Key flags:
-#   --skip-training    Load pre-trained models instead of training
-#   --alpha 0.10       Set coverage level (default: 0.10)
-#   --device cuda      Use GPU (auto-detects if not specified)
-#   --output-dir results/  Directory for output files
-#   --skip-ablation    Skip ablation studies to save time
+python run_all.py --skip-training
+python run_all.py --device cuda --epochs 5 --batch-size 16
+python run_all.py --alpha 0.10 --lambda-steps 11 --skip-ablation
 ```
+
+`--skip-training` now means "require saved models and do not train." If a saved
+model is missing, the command fails with a clear error. Use the default behavior
+to train missing models, or `--force-retrain` to ignore saved models and retrain.
+
+## Data Protocol
+
+The default experiment uses HateXplain. It creates deterministic splits:
+
+- 60% train
+- 20% calibration
+- 10% tuning
+- 10% final test
+
+Splits are stratified by label plus primary target group when possible, with
+rare group-label strata collapsed so that very small groups do not break the
+split. The pipeline saves `data/hatexplain_split_distributions.csv` so group
+and label distribution drift can be inspected.
+
+ToxiGen and Davidson preprocessing helpers remain in `data/download_data.py`,
+but they are not part of the default evaluation pipeline because their label
+spaces and group metadata differ from HateXplain.
 
 ## Methods
 
 ### Marginal Conformal Prediction
-Standard split CP using either softmax or APS (Adaptive Prediction Sets) nonconformity scores. Provides marginal coverage guarantee: P(Y in C(X)) >= 1 - alpha.
+
+Standard split conformal prediction using either softmax or APS nonconformity
+scores. It targets marginal coverage:
+
+```text
+P(Y in C(X)) >= 1 - alpha
+```
 
 ### Group-Conditional Conformal Prediction
-Computes separate conformal thresholds per demographic group. Targets per-group coverage: P(Y in C(X) | G=g) >= 1 - alpha for all groups g. Falls back to marginal threshold for small groups (< 30 samples).
+
+Computes separate thresholds by demographic target group. Groups with fewer
+than 30 calibration examples use the marginal threshold as a fallback.
 
 ### Fairness-Regularized Conformal Prediction
+
 Interpolates between marginal and group-conditional thresholds:
 
-```
+```text
 q_fair_g = lambda * q_g + (1 - lambda) * q_marginal
 ```
 
-Lambda controls fairness-efficiency tradeoff:
-- lambda=0: pure marginal (small sets, poor group fairness)
-- lambda=1: pure group-conditional (fair coverage, larger sets)
+Lambda is selected on the tuning split using an objective that first avoids
+undercoverage, then minimizes reliable-group coverage disparity, then average
+set size.
 
-## Datasets
+## Metrics
 
-- **HateXplain**: 3-class hate speech with demographic target annotations
-- **ToxiGen**: Machine-generated toxic text with target group labels
-- **Davidson**: Tweet-level hate/offensive/neither (no demographic labels)
+The primary disparity metric is computed on reliable groups only, where a
+reliable group has at least 30 final-test examples by default. The output table
+still reports all groups, flags small groups, and includes Wilson confidence
+intervals for coverage estimates.
 
-## Output
+Generated outputs include:
 
-After running, `results/` contains:
-- `per_group_coverage.csv` — coverage rates per group per method
-- `coverage_bar_chart.pdf` — grouped bar chart of per-group coverage
-- `lambda_tradeoff.pdf` — Pareto frontier (disparity vs. set size)
-- `multi_alpha_disparity.pdf` — disparity across alpha values
-- `ablation_summary.csv` — ablation results table
-- `full_results_summary.txt` — text summary of key findings
+- `results/per_group_coverage.csv`
+- `results/coverage_bar_chart.pdf`
+- `results/lambda_tradeoff.pdf`
+- `results/multi_alpha_disparity.pdf`
+- `results/ablation_summary.csv`
+- `results/full_results_summary.txt`
 
 ## Reproducibility
 
-All random seeds are fixed to 42. Results are deterministic given the same hardware and library versions.
+Random seeds are fixed to 42 for NumPy and PyTorch. Exact reproducibility also
+depends on hardware, CUDA/cuDNN behavior, and installed package versions.
+
+## Tests
+
+Run the lightweight conformal unit tests with:
+
+```bash
+python -m unittest discover -s tests
+```

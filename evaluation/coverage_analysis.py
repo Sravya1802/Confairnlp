@@ -1,119 +1,131 @@
 """
-coverage_analysis.py — Per-group coverage analysis and visualization.
+Per-group coverage analysis and visualization.
 
-Generates:
-  1. Per-group coverage table (CSV + printed)
-  2. Coverage bar chart (PDF) comparing methods
-  3. Lambda tradeoff curve (PDF) — Pareto frontier
-  4. Multi-alpha analysis
+The primary disparity metric excludes groups with very small final-test counts
+by default, while still reporting all-group disparity and marking small groups
+in the output table.
 """
 
 import os
 
 import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
+
+from conformal.fair_cp import result_for_lambda
+from conformal.group_conditional_cp import (
+    MIN_RELIABLE_TEST_GROUP_SIZE,
+    compute_coverage_disparity,
+    get_group_indices,
+    sample_group_list,
+)
 
 SEED = 42
 np.random.seed(SEED)
 
 
+def wilson_interval(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Compute a Wilson confidence interval for a binomial proportion."""
+    if n == 0:
+        return np.nan, np.nan
+    p_hat = successes / n
+    denominator = 1 + z**2 / n
+    center = (p_hat + z**2 / (2 * n)) / denominator
+    half_width = (
+        z
+        * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4 * n)) / n)
+        / denominator
+    )
+    return max(0.0, center - half_width), min(1.0, center + half_width)
+
+
+def _group_ci(result: dict) -> tuple[float, float]:
+    return wilson_interval(result.get("n_covered", 0), result.get("n_test", 0))
+
+
 def build_coverage_table(
-    marginal_results: dict,
+    marginal_per_group: dict,
     group_cond_results: dict,
     fair_cp_results: dict,
-    alpha: float,
 ) -> pd.DataFrame:
-    """Build a per-group coverage comparison table.
-
-    Args:
-        marginal_results: Results from marginal CP (includes prediction_sets)
-        group_cond_results: Results from group-conditional CP
-        fair_cp_results: Results from fair CP at the best lambda
-        alpha: Significance level
-
-    Returns:
-        DataFrame with columns: Group, Marginal_Coverage, Marginal_SetSize,
-        GroupCond_Coverage, GroupCond_SetSize, FairCP_Coverage, FairCP_SetSize
-    """
-    groups = sorted(group_cond_results["per_group"].keys())
+    """Build a per-group coverage comparison table."""
+    groups = sorted(
+        set(marginal_per_group)
+        | set(group_cond_results["per_group"])
+        | set(fair_cp_results["per_group"])
+    )
 
     rows = []
     for group in groups:
-        gc = group_cond_results["per_group"][group]
-        fc = fair_cp_results["per_group"].get(group, {})
+        marginal = marginal_per_group.get(group, {})
+        gc = group_cond_results["per_group"].get(group, {})
+        fair = fair_cp_results["per_group"].get(group, {})
+        marginal_low, marginal_high = _group_ci(marginal)
+        gc_low, gc_high = _group_ci(gc)
+        fair_low, fair_high = _group_ci(fair)
 
-        row = {
-            "Group": group,
-            "GroupCond_Coverage": gc["coverage"],
-            "GroupCond_SetSize": gc["avg_set_size"],
-            "GroupCond_N": gc["n_test"],
-            "FairCP_Coverage": fc.get("coverage", np.nan),
-            "FairCP_SetSize": fc.get("avg_set_size", np.nan),
-        }
-        rows.append(row)
+        rows.append(
+            {
+                "Group": group,
+                "Reliable_Group": bool(
+                    gc.get("reliable_group")
+                    or fair.get("reliable_group")
+                    or marginal.get("reliable_group")
+                ),
+                "N_Test": int(
+                    gc.get("n_test")
+                    or fair.get("n_test")
+                    or marginal.get("n_test", 0)
+                ),
+                "N_Calibration": int(gc.get("n_cal", fair.get("n_cal", 0))),
+                "Marginal_Coverage": marginal.get("coverage", np.nan),
+                "Marginal_CI_Low": marginal_low,
+                "Marginal_CI_High": marginal_high,
+                "Marginal_SetSize": marginal.get("avg_set_size", np.nan),
+                "GroupCond_Coverage": gc.get("coverage", np.nan),
+                "GroupCond_CI_Low": gc_low,
+                "GroupCond_CI_High": gc_high,
+                "GroupCond_SetSize": gc.get("avg_set_size", np.nan),
+                "GroupCond_Fallback": bool(gc.get("used_marginal_fallback", False)),
+                "FairCP_Coverage": fair.get("coverage", np.nan),
+                "FairCP_CI_Low": fair_low,
+                "FairCP_CI_High": fair_high,
+                "FairCP_SetSize": fair.get("avg_set_size", np.nan),
+                "FairCP_Fallback": bool(fair.get("used_marginal_fallback", False)),
+            }
+        )
 
-    df = pd.DataFrame(rows)
-
-    # Add marginal coverage (same for all groups in standard marginal CP)
-    df["Marginal_Coverage"] = marginal_results["coverage"]
-    df["Marginal_SetSize"] = marginal_results["avg_set_size"]
-
-    # Reorder columns
-    df = df[
-        [
-            "Group",
-            "Marginal_Coverage",
-            "Marginal_SetSize",
-            "GroupCond_Coverage",
-            "GroupCond_SetSize",
-            "FairCP_Coverage",
-            "FairCP_SetSize",
-            "GroupCond_N",
-        ]
-    ]
-
-    return df
+    return pd.DataFrame(rows)
 
 
 def compute_per_group_marginal_coverage(
     prediction_sets: list,
     test_labels: np.ndarray,
     test_groups: list,
+    min_test_group_size: int = MIN_RELIABLE_TEST_GROUP_SIZE,
 ) -> dict:
-    """Compute marginal CP coverage broken down by group.
-
-    Args:
-        prediction_sets: Prediction sets from marginal CP
-        test_labels: True labels
-        test_groups: Group labels for test samples
-
-    Returns:
-        Dict mapping group -> {coverage, avg_set_size, n_test}
-    """
-    from conformal.group_conditional_cp import get_group_indices
-
-    all_groups = set()
-    for g in test_groups:
-        if isinstance(g, list):
-            all_groups.update(g)
-        else:
-            all_groups.add(g)
+    """Compute marginal CP coverage broken down by group."""
+    all_groups = sorted({group for groups in test_groups for group in sample_group_list(groups)})
 
     per_group = {}
-    for group in sorted(all_groups):
+    for group in all_groups:
         idx = get_group_indices(test_groups, group)
         if len(idx) == 0:
             continue
-        covered = sum(1 for i in idx if test_labels[i] in prediction_sets[i])
+        n_covered = sum(1 for i in idx if test_labels[i] in prediction_sets[i])
         sizes = [len(prediction_sets[i]) for i in idx]
+        ci_low, ci_high = wilson_interval(n_covered, len(idx))
         per_group[group] = {
-            "coverage": covered / len(idx),
-            "avg_set_size": np.mean(sizes),
+            "coverage": n_covered / len(idx),
+            "avg_set_size": float(np.mean(sizes)),
             "n_test": len(idx),
+            "n_covered": n_covered,
+            "ci_low": ci_low,
+            "ci_high": ci_high,
+            "reliable_group": len(idx) >= min_test_group_size,
         }
 
     return per_group
@@ -126,15 +138,7 @@ def plot_coverage_bar_chart(
     alpha: float,
     save_path: str,
 ):
-    """Plot grouped bar chart of per-group coverage for all 3 methods.
-
-    Args:
-        marginal_per_group: Per-group coverage from marginal CP
-        group_cond_results: Group-conditional CP results
-        fair_cp_results: Fair CP results (best lambda)
-        alpha: Significance level
-        save_path: Path to save the PDF plot
-    """
+    """Plot grouped bar chart of per-group coverage for all methods."""
     groups = sorted(group_cond_results["per_group"].keys())
 
     marginal_covs = [marginal_per_group.get(g, {}).get("coverage", np.nan) for g in groups]
@@ -149,13 +153,17 @@ def plot_coverage_bar_chart(
     ax.bar(x, gc_covs, width, label="Group-Conditional CP", color="#DD8452")
     ax.bar(x + width, fair_covs, width, label="Fair CP", color="#55A868")
 
-    # Target coverage line
-    ax.axhline(y=1 - alpha, color="red", linestyle="--", linewidth=1.5,
-               label=f"Target (1-α = {1-alpha:.2f})")
+    ax.axhline(
+        y=1 - alpha,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Target (1-alpha = {1-alpha:.2f})",
+    )
 
     ax.set_xlabel("Demographic Group", fontsize=12)
     ax.set_ylabel("Coverage Rate", fontsize=12)
-    ax.set_title(f"Per-Group Coverage Comparison (α = {alpha})", fontsize=14)
+    ax.set_title(f"Per-Group Coverage Comparison (alpha = {alpha})", fontsize=14)
     ax.set_xticks(x)
     ax.set_xticklabels(groups, rotation=45, ha="right", fontsize=9)
     ax.legend(fontsize=10)
@@ -170,62 +178,71 @@ def plot_lambda_tradeoff(
     sweep_results: list,
     alpha: float,
     save_path: str,
+    selected_lambda: float | None = None,
 ):
-    """Plot the Pareto frontier: coverage disparity vs. avg set size.
-
-    Args:
-        sweep_results: List of results from fair_cp_sweep
-        alpha: Significance level
-        save_path: Path to save the PDF plot
-    """
-    lambdas = [r["lambda"] for r in sweep_results]
-    disparities = [r["coverage_disparity"] for r in sweep_results]
-    set_sizes = [r["overall_avg_set_size"] for r in sweep_results]
+    """Plot the Fair CP tradeoff: reliable disparity vs. average set size."""
+    lambdas = [result["lambda"] for result in sweep_results]
+    disparities = [result["coverage_disparity"] for result in sweep_results]
+    set_sizes = [result["overall_avg_set_size"] for result in sweep_results]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-
-    scatter = ax.scatter(set_sizes, disparities, c=lambdas, cmap="viridis",
-                         s=100, edgecolors="black", linewidth=0.5, zorder=5)
+    scatter = ax.scatter(
+        set_sizes,
+        disparities,
+        c=lambdas,
+        cmap="viridis",
+        s=100,
+        edgecolors="black",
+        linewidth=0.5,
+        zorder=5,
+    )
     ax.plot(set_sizes, disparities, "--", color="gray", alpha=0.5, zorder=1)
 
-    # Annotate lambda values
     for i, lam in enumerate(lambdas):
-        ax.annotate(f"λ={lam:.1f}", (set_sizes[i], disparities[i]),
-                    textcoords="offset points", xytext=(5, 5), fontsize=7)
+        ax.annotate(f"lambda={lam:.1f}", (set_sizes[i], disparities[i]), xytext=(5, 5),
+                    textcoords="offset points", fontsize=7)
 
-    plt.colorbar(scatter, ax=ax, label="λ")
+    if selected_lambda is not None:
+        selected = result_for_lambda(sweep_results, selected_lambda)
+        ax.scatter(
+            [selected["overall_avg_set_size"]],
+            [selected["coverage_disparity"]],
+            s=180,
+            facecolors="none",
+            edgecolors="red",
+            linewidth=2,
+            label=f"Selected lambda={selected['lambda']:.2f}",
+            zorder=10,
+        )
+        ax.legend(fontsize=9)
+
+    plt.colorbar(scatter, ax=ax, label="lambda")
     ax.set_xlabel("Average Prediction Set Size", fontsize=12)
-    ax.set_ylabel("Coverage Disparity (max |cov_g - (1-α)|)", fontsize=12)
-    ax.set_title(f"Fairness-Efficiency Tradeoff (α = {alpha})", fontsize=14)
+    ax.set_ylabel("Coverage Disparity on Reliable Groups", fontsize=12)
+    ax.set_title(f"Fairness-Efficiency Tradeoff (alpha = {alpha})", fontsize=14)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"[Plot] Lambda tradeoff curve saved to {save_path}")
 
 
-def plot_multi_alpha_disparity(
-    alpha_results: dict,
-    save_path: str,
-):
-    """Plot coverage disparity across multiple alpha values.
-
-    Args:
-        alpha_results: Dict mapping alpha -> {marginal_disp, gc_disp, fair_disp}
-        save_path: Path to save the PDF plot
-    """
+def plot_multi_alpha_disparity(alpha_results: dict, save_path: str):
+    """Plot coverage disparity across multiple alpha values."""
     alphas = sorted(alpha_results.keys())
-    methods = ["Marginal", "Group-Conditional", "Fair CP"]
+    methods = [
+        ("Marginal CP", "marginal_disparity"),
+        ("Group-Conditional CP", "group_conditional_disparity"),
+        ("Fair CP", "fair_cp_disparity"),
+    ]
 
     fig, ax = plt.subplots(figsize=(8, 5))
+    for label, key in methods:
+        disparities = [alpha_results[alpha].get(key, 0) for alpha in alphas]
+        ax.plot(alphas, disparities, "o-", label=label, markersize=8)
 
-    for method in methods:
-        key = method.lower().replace("-", "_").replace(" ", "_")
-        disparities = [alpha_results[a].get(f"{key}_disparity", 0) for a in alphas]
-        ax.plot(alphas, disparities, "o-", label=method, markersize=8)
-
-    ax.set_xlabel("α (Significance Level)", fontsize=12)
-    ax.set_ylabel("Coverage Disparity", fontsize=12)
-    ax.set_title("Coverage Disparity Across α Values", fontsize=14)
+    ax.set_xlabel("alpha (Significance Level)", fontsize=12)
+    ax.set_ylabel("Reliable-Group Coverage Disparity", fontsize=12)
+    ax.set_title("Coverage Disparity Across Alpha Values", fontsize=14)
     ax.legend(fontsize=10)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -241,77 +258,78 @@ def run_coverage_analysis(
     test_groups: list,
     alpha: float,
     output_dir: str,
+    selected_lambda: float | None = None,
+    min_test_group_size: int = MIN_RELIABLE_TEST_GROUP_SIZE,
 ) -> dict:
-    """Run full coverage analysis and generate all outputs.
-
-    Args:
-        marginal_results: Results from marginal CP
-        group_cond_results: Results from group-conditional CP
-        fair_sweep_results: Results from fair CP lambda sweep
-        test_labels: Test set true labels
-        test_groups: Test set group labels
-        alpha: Significance level
-        output_dir: Directory to save results
-
-    Returns:
-        Dict with all analysis results
-    """
+    """Run coverage analysis and generate output files."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # Find best lambda result (lowest disparity)
-    best_fair = min(fair_sweep_results, key=lambda r: r["coverage_disparity"])
-    print(f"\nBest Fair CP: lambda={best_fair['lambda']:.2f}, "
-          f"disparity={best_fair['coverage_disparity']:.4f}")
+    if selected_lambda is None:
+        fair_result = min(fair_sweep_results, key=lambda result: result["coverage_disparity"])
+        print(
+            "\n[Coverage Analysis] No tuned lambda was provided; using lowest "
+            "test-sweep disparity for this analysis only."
+        )
+    else:
+        fair_result = result_for_lambda(fair_sweep_results, selected_lambda)
+        print(
+            f"\nSelected Fair CP lambda={fair_result['lambda']:.2f} "
+            f"(chosen on tuning split)"
+        )
 
-    # Compute per-group marginal coverage
     marginal_per_group = compute_per_group_marginal_coverage(
-        marginal_results["prediction_sets"], test_labels, test_groups
+        marginal_results["prediction_sets"],
+        test_labels,
+        test_groups,
+        min_test_group_size=min_test_group_size,
     )
 
-    # Build coverage table
     coverage_df = build_coverage_table(
-        marginal_results, group_cond_results, best_fair, alpha
+        marginal_per_group,
+        group_cond_results,
+        fair_result,
     )
 
-    # Add per-group marginal coverage to the table
-    for i, row in coverage_df.iterrows():
-        group = row["Group"]
-        if group in marginal_per_group:
-            coverage_df.at[i, "Marginal_Coverage"] = marginal_per_group[group]["coverage"]
-            coverage_df.at[i, "Marginal_SetSize"] = marginal_per_group[group]["avg_set_size"]
-
-    # Save coverage table
     csv_path = os.path.join(output_dir, "per_group_coverage.csv")
     coverage_df.to_csv(csv_path, index=False, float_format="%.4f")
     print(f"\n[Coverage Table] Saved to {csv_path}")
     print(coverage_df.to_string(index=False))
 
-    # Plot coverage bar chart
     plot_coverage_bar_chart(
-        marginal_per_group, group_cond_results, best_fair, alpha,
+        marginal_per_group,
+        group_cond_results,
+        fair_result,
+        alpha,
         os.path.join(output_dir, "coverage_bar_chart.pdf"),
     )
 
-    # Plot lambda tradeoff
     plot_lambda_tradeoff(
-        fair_sweep_results, alpha,
+        fair_sweep_results,
+        alpha,
         os.path.join(output_dir, "lambda_tradeoff.pdf"),
+        selected_lambda=fair_result["lambda"],
     )
 
-    # Compute disparities for summary
-    marginal_disparity = max(
-        abs(v["coverage"] - (1 - alpha))
-        for v in marginal_per_group.values()
-    ) if marginal_per_group else 0.0
+    marginal_disparity_all = compute_coverage_disparity(marginal_per_group, alpha)
+    marginal_disparity_reliable = compute_coverage_disparity(
+        marginal_per_group,
+        alpha,
+        min_test_group_size=min_test_group_size,
+    )
 
-    analysis_results = {
+    return {
         "coverage_table": coverage_df,
         "marginal_per_group": marginal_per_group,
-        "marginal_disparity": marginal_disparity,
+        "marginal_disparity": marginal_disparity_reliable or marginal_disparity_all,
+        "marginal_disparity_reliable": marginal_disparity_reliable,
+        "marginal_disparity_all": marginal_disparity_all,
         "gc_disparity": group_cond_results["coverage_disparity"],
-        "fair_disparity": best_fair["coverage_disparity"],
-        "best_lambda": best_fair["lambda"],
-        "best_fair_results": best_fair,
+        "gc_disparity_reliable": group_cond_results["coverage_disparity_reliable"],
+        "gc_disparity_all": group_cond_results["coverage_disparity_all"],
+        "fair_disparity": fair_result["coverage_disparity"],
+        "fair_disparity_reliable": fair_result["coverage_disparity_reliable"],
+        "fair_disparity_all": fair_result["coverage_disparity_all"],
+        "selected_lambda": fair_result["lambda"],
+        "selected_fair_results": fair_result,
+        "min_test_group_size": min_test_group_size,
     }
-
-    return analysis_results
