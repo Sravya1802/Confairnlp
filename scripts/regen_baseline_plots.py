@@ -116,14 +116,19 @@ def main() -> int:
         os.path.join(OUTPUT_DIR, "multi_alpha_disparity.pdf"),
     )
 
-    print("\nCopying refreshed PDFs into baseline_snapshot/...")
+    print("\nCopying refreshed PDFs and PNGs into baseline_snapshot/...")
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
     for name in [
         "coverage_bar_chart.pdf",
+        "coverage_bar_chart.png",
         "lambda_tradeoff.pdf",
+        "lambda_tradeoff.png",
         "multi_alpha_disparity.pdf",
+        "multi_alpha_disparity.png",
     ]:
         src = os.path.join(OUTPUT_DIR, name)
+        if not os.path.exists(src):
+            continue
         dst = os.path.join(SNAPSHOT_DIR, name)
         shutil.copy2(src, dst)
         print(f"  {dst}")

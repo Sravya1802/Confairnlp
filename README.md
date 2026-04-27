@@ -49,6 +49,37 @@ are in [`results/BASELINE_README.md`](results/BASELINE_README.md).
 The unifying claim: **post-hoc conformal prediction is a calibration tool, not
 a debiasing tool.**
 
+## Baseline results
+
+| Method | Coverage | Avg set size | Reliable-group disparity | All-group disparity |
+|---|---|---|---|---|
+| Marginal CP | 0.9059 | 1.85 | 0.0615 | 0.3000 |
+| Group-Conditional CP | 0.9121 | 1.95 | 0.0459 | 0.3000 |
+| Fair CP (lambda* = 0.10) | 0.9017 | 1.83 | **0.0449** | 0.3000 |
+
+Fair CP shrinks reliable-group disparity from 0.062 to 0.045 (~27% relative
+reduction) while *also* slightly reducing average set size. Total pipeline
+runtime: 56.6 minutes on a GTX 1660 Ti at batch size 8.
+
+![Per-group coverage](results/baseline_snapshot/coverage_bar_chart.png)
+
+*Per-group coverage across the three CP methods. The horizontal line at 0.90
+is the target. Group-Conditional and Fair CP raise coverage on most reliable
+groups while accepting wider sets.*
+
+![Fair-CP Pareto frontier](results/baseline_snapshot/lambda_tradeoff.png)
+
+*Fair-CP fairness-efficiency tradeoff. Lambda = 0.0 reduces to Marginal CP
+(small sets, larger disparity); lambda = 1.0 reduces to Group-Conditional CP
+(per-group guarantee, larger sets). The selected lambda* = 0.10 (red circle)
+sits near the elbow.*
+
+![Disparity vs alpha](results/baseline_snapshot/multi_alpha_disparity.png)
+
+*Reliable-group coverage disparity across alpha = {0.05, 0.10, 0.15, 0.20}.
+Group-Conditional and Fair CP track each other closely and stay below
+Marginal across the sweep.*
+
 ## Project structure
 
 ```text
@@ -207,32 +238,83 @@ classifies the dominant failure mode:
 - `U_g` (model uncertainty): mean normalized softmax entropy
 - `S_g` (systemic bias): `1 - argmax accuracy on the group`
 
-Reports per-group dominant cause (DataScarcity / ModelUncertainty /
-SystemicBias / Mixed) and Spearman correlations of each diagnostic with
-marginal undercoverage on reliable groups. Validates the framework: in our
-data, `S_g` (not `D_g`) drives gaps.
+![Causal Coverage Attribution](figures/fig1_causal_attribution.png)
 
-Outputs: `results/attribution_scores.csv`, `results/failure_taxonomy.csv`,
-`results/attribution_validation.txt`.
+*Stacked diagnostic scores for the 13 reliable groups (n_test >= 30), sorted
+by marginal undercoverage descending. Letter above each bar = dominant cause:
+D = DataScarcity, U = ModelUncertainty, S = SystemicBias, M = Mixed.*
+
+**Findings (HateBERT, 13 reliable groups, 10 undercovered):**
+
+| Diagnostic | Spearman rho vs undercoverage | p-value |
+|---|---|---|
+| `D_g` (data scarcity) | +0.10 | 0.78 |
+| `U_g` (model uncertainty) | +0.50 | 0.14 |
+| `S_g` (systemic bias) | **+0.55** | **0.10** |
+
+- 18 of 23 groups classified SystemicBias-dominated, 3 DataScarcity, 2 Mixed.
+- Worst undercovered reliable groups: Asian (coverage 0.855, gap -0.045),
+  Islam (0.858, -0.042); worst over-covered: unknown (0.962, +0.062).
+- Fair CP at lambda* = 0.10 reduces mean `|coverage - target|` by only
+  +0.0038 on Systemic-Bias groups - because post-hoc threshold mixing cannot
+  repair what the classifier got wrong.
+- The Vovk (2012) split-CP bound `|cov - (1-alpha)| <= O(1/sqrt(n_g))` is
+  *loose* in our reliable-group regime (n_cal in the hundreds), confirming
+  that calibration noise is not the binding constraint.
+
+Outputs: [`results/attribution_scores.csv`](results/attribution_scores.csv),
+[`results/failure_taxonomy.csv`](results/failure_taxonomy.csv),
+[`results/attribution_validation.txt`](results/attribution_validation.txt).
 
 ### Module 2 - Set-Size Disparity and Bootstrap CIs
 
 Three contributions on top of per-group coverage:
 
-1. Per-group mean and 95th-percentile set sizes, plus Gini coefficient of
-   mean-set-size across reliable groups (Marginal 0.026, GC 0.053, Fair
-   0.031).
-2. Size-stratified coverage: bins test samples by `|C(x)|` and recomputes
-   coverage in each bin. Singletons cover 0.84, pairs 0.91, triples 1.00 -
-   the marginal 1-alpha target averages over heterogeneous size
-   sub-populations.
-3. Bootstrap 95% CIs on reliable-group coverage disparity (B = 500
-   iterations resampling cal+test, lambda* held fixed). Paired permutation
-   test on iteration-level differences confirms the Fair-CP gain is
-   statistically significant despite overlapping unpaired CIs.
+1. **Set-size disparity.** Per-group mean and 95th-percentile set sizes;
+   Gini coefficient of mean-set-size across reliable groups.
+2. **Size-stratified coverage.** Bins test samples by `|C(x)|` and recomputes
+   coverage in each bin.
+3. **Bootstrap 95% CIs.** B = 500 iterations resampling cal + test; lambda*
+   held fixed at the tuning-split-selected value; paired permutation test on
+   iteration-level differences.
 
-Outputs: `results/set_size_disparity.csv`,
-`results/size_stratified_coverage.csv`, `results/disparity_bootstrap.csv`.
+![Bootstrap CIs](figures/fig2_bootstrap_ci.png)
+
+*Reliable-group disparity per CP method with bootstrap 95% CIs (B = 500).
+Unpaired CIs overlap, but the paired permutation test (p = 0.0005) confirms
+Fair-CP's improvement is statistically significant -- pairing controls for
+resample-level noise that dominates unpaired CIs.*
+
+![Size-stratified coverage](figures/fig3_size_stratified.png)
+
+*Empirical coverage by prediction-set size bin. Singletons cover 0.84 (under
+target 0.90), pairs 0.91, triples 1.00. The marginal 1-alpha guarantee is an
+average over heterogeneous sub-populations.*
+
+**Findings:**
+
+| Bin | Marginal | GC | Fair | n |
+|---|---|---|---|---|
+| `|C(x)| = 1` | 0.838 | 0.838 | 0.834 | 656-782 |
+| `|C(x)| = 2` | 0.917 | 0.910 | 0.913 | 671-702 |
+| `|C(x)| = 3` | 1.000 | 1.000 | 1.000 | 462-565 |
+
+| Method | Disparity (point) | Bootstrap 95% CI |
+|---|---|---|
+| Marginal | 0.0615 | [0.0507, 0.1336] |
+| Group-Conditional | 0.0459 | [0.0347, 0.1000] |
+| Fair (lambda* = 0.10) | **0.0449** | [0.0373, 0.1295] |
+
+- Paired permutation test (B = 500): Marginal - GC mean difference =
+  +0.0125 (p = 0.0005); Marginal - Fair mean difference = +0.0067
+  (p = 0.0005). The fairness gain is significant.
+- Set-size Gini coefficients across reliable groups: Marginal 0.026, GC
+  0.053, Fair 0.031. Group-Conditional achieves the strongest per-group
+  coverage guarantee but inflates set-size inequality the most.
+
+Outputs: [`results/set_size_disparity.csv`](results/set_size_disparity.csv),
+[`results/size_stratified_coverage.csv`](results/size_stratified_coverage.csv),
+[`results/disparity_bootstrap.csv`](results/disparity_bootstrap.csv).
 
 ### Module 3 - Counterfactual SGT-Swap Stress Test
 
@@ -246,11 +328,90 @@ Supports three threshold policies via `--threshold-policy`:
 `fixed_source` (isolates text sensitivity, default), `target_group` (proper
 protected-attribute-intervention semantics), `both`.
 
-Outputs: `results/counterfactual_stability.csv`,
-`results/counterfactual_comparison.csv`,
-`results/counterfactual_swap_stats.csv`,
-`results/counterfactual_lexicon.json`. Raw per-post softmax tables go to
-`results/counterfactual_posts.csv` (gitignored).
+![Counterfactual set-flip rates](figures/fig4_counterfactual.png)
+
+*Set-flip rate per swap pair per CP method on the 526 swapped posts. The
+Homosexual->Heterosexual outlier (red band) flips 51% of marginal-CP
+prediction sets - an order of magnitude larger than the next-worst pair.*
+
+**Findings:**
+
+| Swap pair | n_posts | Label-flip rate | Marginal set-flip rate |
+|---|---|---|---|
+| Jewish -> Caucasian | 109 | 21.1% | 23.9% |
+| Islam -> Christian | 111 | 19.8% | 33.3% |
+| **Homosexual -> Heterosexual** | **90** | **18.9%** | **51.1%** |
+| Asian -> Caucasian | 33 | 15.2% | 24.2% |
+| Women -> Men | 108 | 8.3% | 23.1% |
+| African -> Caucasian | 75 | 5.3% | 18.7% |
+
+- The three CP methods (Marginal, GC, Fair) sit within 0.01 of one another
+  on coverage stability, set-flip rate, and mean set-size delta. The
+  instability source is the underlying classifier, not the conformal layer.
+- Mean set-size delta is consistently *negative*: counterfactual sets are
+  smaller than original sets, because HateBERT becomes more confident on
+  the target-group rephrasing of the same post -- a signature of SGT-token
+  shortcut learning.
+- The Homosexual -> Heterosexual outlier reflects a worst-case combination
+  of shortcut learning, distribution shift (Heterosexual has only 23
+  calibration samples; below the 30-sample reliability threshold so all
+  methods fall back to the marginal q-hat), and lexical replacement that
+  pushes posts out of the model's training distribution.
+
+Outputs: [`results/counterfactual_stability.csv`](results/counterfactual_stability.csv),
+[`results/counterfactual_comparison.csv`](results/counterfactual_comparison.csv),
+[`results/counterfactual_swap_stats.csv`](results/counterfactual_swap_stats.csv),
+[`results/counterfactual_lexicon.json`](results/counterfactual_lexicon.json).
+Raw per-post softmax tables go to `results/counterfactual_posts.csv`
+(gitignored).
+
+## Cross-cutting conclusions
+
+Three modules taken together yield a coherent story:
+
+1. **Where the gaps come from.** Reliable-group coverage gaps are driven by
+   classifier accuracy variance (`S_g`), not by calibration scarcity (`D_g`).
+   Module 1's Spearman test shows `D_g` is the *weakest* predictor of
+   undercoverage among reliable groups; `S_g` and `U_g` are stronger.
+2. **What Fair CP buys.** Fair CP at lambda* = 0.10 (selected on the dedicated
+   tuning split, leak-free) significantly reduces reliable-group coverage
+   disparity vs Marginal CP - paired permutation p = 0.0005 - but only by
+   ~0.007 in absolute terms. Module 2 also exposes that singleton prediction
+   sets cover only 0.84 (under target) while triple-class sets cover 1.00,
+   demonstrating that the marginal `1 - alpha` guarantee averages over
+   heterogeneous size sub-populations.
+3. **What Fair CP does not buy.** Module 3's counterfactual stress test shows
+   the three CP methods are indistinguishable in their robustness to SGT
+   token swaps. Coverage-fairness and counterfactual-fairness are separate
+   axes; Fair CP only addresses the former. The 51% set-flip rate on
+   Homosexual -> Heterosexual indicates HateBERT is using SGT tokens as
+   shortcuts -- a property of the base model that no post-hoc CP wrapper
+   can repair.
+
+The unifying narrative: **post-hoc conformal prediction is a calibration
+tool, not a debiasing tool.** When the underlying classifier is the
+bottleneck (Modules 1 and 3), Fair CP yields small, statistically-
+significant-but-practically-modest gains; the larger gains require improving
+the classifier itself.
+
+## Future work
+
+Scoped out of the current project but natural follow-ups (full discussion
+in [`results/NOVELTY_SUMMARY.md`](results/NOVELTY_SUMMARY.md)):
+
+- **Intersectional CP.** Joint-conditional or stratified CP over pairs of
+  demographic tags (Black Women, Muslim Refugees, etc.).
+- **LLM-as-classifier with ConU.** Apply conformal-uncertainty (Cheng et al.
+  EMNLP 2024) to a frozen instruction-tuned LLM and run the same per-group
+  analysis.
+- **Multi-seed training variance.** Re-train BERT and HateBERT with seeds
+  42 / 43 / 44 and report mean +/- std of disparity across seeds.
+- **Calibration-set bootstrap with re-tuned lambda.** Re-run the lambda
+  selection on each bootstrap iteration to capture tuning-variance.
+- **Conformal risk control / RAPS.** Evaluate Regularized APS and Conformal
+  Risk Control in addition to softmax and APS scores.
+- **Cross-dataset transfer.** Calibrate on HateXplain, evaluate per-group
+  disparity on ToxiGen.
 
 ## Metrics
 
@@ -264,10 +425,9 @@ confidence intervals for coverage estimates.
 Baseline pipeline (`results/`, snapshot in `results/baseline_snapshot/`):
 
 - `per_group_coverage.csv` -- per-group coverage with Wilson CIs
-- `coverage_bar_chart.pdf` -- per-group coverage across the three CP methods
-- `lambda_tradeoff.pdf` -- Fair-CP Pareto frontier
-- `multi_alpha_disparity.pdf` -- disparity across alpha in {0.05, 0.10,
-  0.15, 0.20}
+- `coverage_bar_chart.{pdf,png}` -- per-group coverage across the three CP methods
+- `lambda_tradeoff.{pdf,png}` -- Fair-CP Pareto frontier
+- `multi_alpha_disparity.{pdf,png}` -- disparity across alpha
 - `ablation_summary.csv` -- model x score-function x alpha grid
 - `full_results_summary.txt` -- text summary
 
