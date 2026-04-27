@@ -64,7 +64,7 @@ def _setup_matplotlib() -> None:
             "legend.fontsize": 12,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "savefig.dpi": 300,
+            "savefig.dpi": 400,
             "savefig.bbox": "tight",
             "axes.spines.top": False,
             "axes.spines.right": False,
@@ -76,8 +76,8 @@ def _save(fig: plt.Figure, basename: str) -> None:
     os.makedirs(FIGURES_DIR, exist_ok=True)
     pdf = os.path.join(FIGURES_DIR, basename + ".pdf")
     png = os.path.join(FIGURES_DIR, basename + ".png")
-    fig.savefig(pdf, dpi=300, bbox_inches="tight")
-    fig.savefig(png, dpi=300, bbox_inches="tight")
+    fig.savefig(pdf, dpi=400, bbox_inches="tight")
+    fig.savefig(png, dpi=400, bbox_inches="tight")
     plt.close(fig)
     print(f"  -> {pdf}")
     print(f"  -> {png}")

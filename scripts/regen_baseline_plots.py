@@ -133,7 +133,7 @@ def main() -> int:
         shutil.copy2(src, dst)
         print(f"  {dst}")
 
-    print("\nDone. All baseline PDFs refreshed at 300 DPI.")
+    print("\nDone. All baseline PDFs and PNGs refreshed at 400 DPI.")
     return 0
 
 

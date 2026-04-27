@@ -27,7 +27,7 @@ SEED = 42
 np.random.seed(SEED)
 
 
-def _save_pdf_and_png(save_path: str, dpi: int = 300) -> None:
+def _save_pdf_and_png(save_path: str, dpi: int = 400) -> None:
     """Save the active figure to ``save_path`` and a sibling PNG.
 
     GitHub markdown renders PNG but not PDF, so every plot in this module
@@ -181,7 +181,7 @@ def plot_coverage_bar_chart(
     ax.legend(fontsize=10)
     ax.set_ylim(0.5, 1.05)
     plt.tight_layout()
-    _save_pdf_and_png(save_path, dpi=300)
+    _save_pdf_and_png(save_path, dpi=400)
     plt.close()
     print(f"[Plot] Coverage bar chart saved to {save_path}")
 
@@ -233,7 +233,7 @@ def plot_lambda_tradeoff(
     ax.set_ylabel("Coverage Disparity on Reliable Groups", fontsize=12)
     ax.set_title(f"Fairness-Efficiency Tradeoff (alpha = {alpha})", fontsize=14)
     plt.tight_layout()
-    _save_pdf_and_png(save_path, dpi=300)
+    _save_pdf_and_png(save_path, dpi=400)
     plt.close()
     print(f"[Plot] Lambda tradeoff curve saved to {save_path}")
 
@@ -257,7 +257,7 @@ def plot_multi_alpha_disparity(alpha_results: dict, save_path: str):
     ax.set_title("Coverage Disparity Across Alpha Values", fontsize=14)
     ax.legend(fontsize=10)
     plt.tight_layout()
-    _save_pdf_and_png(save_path, dpi=300)
+    _save_pdf_and_png(save_path, dpi=400)
     plt.close()
     print(f"[Plot] Multi-alpha disparity plot saved to {save_path}")
 
